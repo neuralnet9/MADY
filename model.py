@@ -271,7 +271,7 @@ class SummarizationModel(object):
         if hps.mode=="train": self._add_emb_vis(embedding) # add to tensorboard
         #self._enc_batc [hps.batch_size, None]
         emb_enc_inputs = tf.nn.embedding_lookup(embedding, self._enc_batch)
-        # 目的是按照ids从params这个矩阵中拿向量（行） tensor with shape (batch_size, max_enc_steps, emb_size)
+        # tensor with shape (batch_size, max_enc_steps, emb_size)
         emb_dec_inputs = [tf.nn.embedding_lookup(embedding, x) for x in tf.unstack(self._dec_batch, axis=1)]
         #竖着切 list length max_dec_steps containing shape (batch_size, emb_size)
         # first_emb_dec_inputs = [tf.nn.embedding_lookup(embedding, x) for x in tf.unstack(self._first_batch, axis=1)]
