@@ -273,7 +273,7 @@ class SummarizationModel(object):
         emb_enc_inputs = tf.nn.embedding_lookup(embedding, self._enc_batch)
         # tensor with shape (batch_size, max_enc_steps, emb_size)
         emb_dec_inputs = [tf.nn.embedding_lookup(embedding, x) for x in tf.unstack(self._dec_batch, axis=1)]
-        #竖着切 list length max_dec_steps containing shape (batch_size, emb_size)
+        #list length max_dec_steps containing shape (batch_size, emb_size)
         # first_emb_dec_inputs = [tf.nn.embedding_lookup(embedding, x) for x in tf.unstack(self._first_batch, axis=1)]
       # Add the encoder.
       #enc_outputs [batch,max_enc_length, 2*hidden_dim]
