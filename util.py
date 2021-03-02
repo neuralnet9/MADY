@@ -27,7 +27,7 @@ def get_config():
   config.gpu_options.allow_growth=True
   return config
 
-def load_ckpt(saver, sess, ckpt_dir="eval"):
+def load_ckpt(saver, sess, ckpt_dir="train"):
   """Load checkpoint from the ckpt_dir (if unspecified, this is train dir) and restore it to saver and sess, waiting 10 secs in the case of failure. Also returns checkpoint name."""
   while True:
     try:

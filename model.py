@@ -171,12 +171,6 @@ class SummarizationModel(object):
           new_concat=tf.squeeze(new_concat,axis=2)#[batch_size, max_enc_steps, hidden_dim * 2]
           return new_concat
 
-  # def _add_firstpass_decoder(self,inputs):
-  #     hps = self._hps
-  #     cell = tf.contrib.rnn.LSTMCell(hps.hidden_dim, state_is_tuple=True, initializer=self.rand_unif_init)
-  #     first_state=firstpass_decoder(inputs,self._dec_in_state,self._enc_states, self._enc_padding_mask, cell )
-  #     return first_state
-
   def _add_decoder(self, inputs):
     """Add attention decoder to the graph. In train or eval mode, you call this once to get output on ALL steps. In decode (beam search) mode, you call this once for EACH decoder step.
 
@@ -198,9 +192,11 @@ class SummarizationModel(object):
     
     prev_coverage = self.prev_coverage if hps.mode=="decode" and hps.coverage else None # In decode mode, we run attention_decoder one step at a time and so need to pass in the previous step's coverage vector each time
 
-    outputs, out_state, attn_dists, p_gens, coverage = attention_decoder(inputs, self._dec_in_state, self._enc_states, self._enc_padding_mask, cell,  initial_state_attention=(hps.mode=="decode"), pointer_gen=hps.pointer_gen, use_coverage=hps.coverage, prev_coverage=prev_coverage,block=hps.block)
 
-    return outputs, out_state, attn_dists, p_gens, coverage
+
+    outputs, out_state, attn_dists, p_gens, coverage,key_encoder_states = attention_decoder(inputs, self._dec_in_state, self._enc_states,self._pre_key_enc_states,self._pre_pre_key_enc_states, self._enc_padding_mask, cell,  initial_state_attention=(hps.mode=="decode"), pointer_gen=hps.pointer_gen, use_coverage=hps.coverage, prev_coverage=prev_coverage)
+
+    return outputs, out_state, attn_dists, p_gens, coverage,key_encoder_states
 
   def _calc_final_dist(self, vocab_dists, attn_dists):
     """Calculate the final distribution, for the pointer-generator model
@@ -284,6 +280,8 @@ class SummarizationModel(object):
       #self._dec_batch = tf.placeholder(tf.int32, [hps.batch_size, hps.max_dec_steps], name='dec_batch')
       enc_outputs, fw_st, bw_st = self._add_encoder(emb_enc_inputs, self._enc_lens)
       self._enc_states = enc_outputs #batch,max_enc_length,2*hidden_dim
+      self._pre_key_enc_states= enc_outputs
+      self._pre_pre_key_enc_states = enc_outputs
 
       with tf.variable_scope('merge'):
         # (batch_size, max_enc_steps, emb_size+2*hps_dim)
@@ -363,6 +361,7 @@ class SummarizationModel(object):
 
 
       # Our encoder is bidirectional and our decoder is unidirectional so we need to reduce the final encoder hidden state to the right size to be the initial decoder hidden state
+
       self._dec_in_state = self._con_states(fw_st, bw_st)
 
       # Add the decoder.
@@ -371,7 +370,7 @@ class SummarizationModel(object):
 
       with tf.variable_scope('decoder'):
 
-        decoder_outputs, self._dec_out_state, self.attn_dists, self.p_gens, self.coverage = self._add_decoder(emb_dec_inputs)
+        decoder_outputs, self._dec_out_state, self.attn_dists, self.p_gens, self.coverage, self.key_enc_states = self._add_decoder(emb_dec_inputs)
 
       # Add the output projection to obtain the vocabulary distribution
       with tf.variable_scope('output_projection'):
@@ -514,7 +513,7 @@ class SummarizationModel(object):
     return enc_states, dec_in_state[0]
 
 
-  def decode_onestep(self, sess, batch, latest_tokens, enc_states, dec_init_states, prev_coverage):
+  def decode_onestep(self, sess, batch, latest_tokens, enc_states, key_enc_states, pre_key_enc_states, dec_init_states, prev_coverage):
     """For beam search decoding. Run the decoder for one step.
 
     Args:
@@ -544,8 +543,19 @@ class SummarizationModel(object):
     new_h = np.concatenate(hiddens, axis=0)  # shape [batch_size,hidden_dim]
     new_dec_in_state = new_h
     # new_dec_padding_mask=np.repeat(batch.dec_padding_mask,100,axis=1)
+    p_k=key_enc_states
+
+    key_enc_states=[np.expand_dims(state, axis=0) for state in key_enc_states]
+    key_enc_states =np.concatenate(key_enc_states, axis=0)
+
+
+    pre_key_enc_states = [np.expand_dims(state, axis=0) for state in pre_key_enc_states]
+    pre_key_enc_states = np.concatenate(pre_key_enc_states, axis=0)
+
     feed = {
         self._enc_states: enc_states,
+        self._pre_key_enc_states: key_enc_states,
+        self._pre_pre_key_enc_states:pre_key_enc_states,
         self._enc_padding_mask: batch.enc_padding_mask,
         self._dec_in_state: new_dec_in_state,
         self._dec_batch: np.transpose(np.array([latest_tokens])),
@@ -555,7 +565,8 @@ class SummarizationModel(object):
       "ids": self._topk_ids,
       "probs": self._topk_log_probs,
       "states": self._dec_out_state,
-      "attn_dists": self.attn_dists
+      "attn_dists": self.attn_dists,
+      "key_enc_states": self.key_enc_states,
     }
 
     if FLAGS.pointer_gen:
@@ -572,6 +583,11 @@ class SummarizationModel(object):
     # Convert results['states'] (a single LSTMStateTuple) into a list of LSTMStateTuple -- one for each hypothesis
     r = results['states']
     new_states = [r[i, :] for i in range(beam_size)]
+
+    k=results['key_enc_states']
+    new_k=[k[i] for i in range(beam_size)]
+
+
 
     # Convert singleton list containing a tensor to a list of k arrays
     assert len(results['attn_dists'])==1
@@ -591,7 +607,7 @@ class SummarizationModel(object):
     else:
       new_coverage = [None for _ in range(beam_size)]
 
-    return results['ids'], results['probs'], new_states, attn_dists, p_gens, new_coverage
+    return results['ids'], results['probs'], new_states, attn_dists, p_gens, new_coverage,new_k, p_k
 
 
 def _mask_and_avg(values, padding_mask):
