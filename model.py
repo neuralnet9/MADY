@@ -20,7 +20,7 @@ import os
 import time
 import numpy as np
 import tensorflow as tf
-from attention_decoder import attention_decoder
+from ddmn_decoder import attention_decoder
 # from firstpass_decoder import firstpass_decoder
 from tensorflow.contrib.tensorboard.plugins import projector
 from tensorflow.python.ops import nn_ops
@@ -283,82 +283,88 @@ class SummarizationModel(object):
       self._pre_key_enc_states= enc_outputs
       self._pre_pre_key_enc_states = enc_outputs
 
-      with tf.variable_scope('merge'):
-        # (batch_size, max_enc_steps, emb_size+2*hps_dim)
-        # emb_enc_inputs :(batch_size, max_enc_steps, emb_size)
-        # enc_outputs :(batch_size, max_enc_steps, 2*hps_dim)
-        merge_input = tf.concat(axis=2, values=[emb_enc_inputs, enc_outputs])
-        merge_input = tf.expand_dims(merge_input, axis=2)  # (batch_size, max_enc_steps,1, emb_size+2*hps_dim)
-        merge_weight = tf.get_variable('merge_weight', [1, 1, hps.emb_dim + 2 * hps.hidden_dim, 2 * hps.hidden_dim],
-                                       initializer=self.trunc_norm_init)
-        merge_output = tf.nn.conv2d(merge_input, merge_weight, [1, 1, 1, 1],
-                                    "SAME")  # (batch_size, max_enc_steps,1, 2*hps_dim)
-        merge_output = tf.squeeze(merge_output, axis=2)
-        merge_bias = tf.get_variable("merge_bias", [2 * hps.hidden_dim], initializer=self.trunc_norm_init)
-        enc_outputs = merge_output + merge_bias
+      if hps.hier:
+          with tf.variable_scope('merge'):
+              # (batch_size, max_enc_steps, emb_size+2*hps_dim)
+              # emb_enc_inputs :(batch_size, max_enc_steps, emb_size)
+              # enc_outputs :(batch_size, max_enc_steps, 2*hps_dim)
+              merge_input = tf.concat(axis=2, values=[emb_enc_inputs, enc_outputs])
+              merge_input = tf.expand_dims(merge_input, axis=2)  # (batch_size, max_enc_steps,1, emb_size+2*hps_dim)
+              merge_weight = tf.get_variable('merge_weight',
+                                             [1, 1, hps.emb_dim + 2 * hps.hidden_dim, 2 * hps.hidden_dim],
+                                             initializer=self.trunc_norm_init)
+              merge_output = tf.nn.conv2d(merge_input, merge_weight, [1, 1, 1, 1],
+                                          "SAME")  # (batch_size, max_enc_steps,1, 2*hps_dim)
+              merge_output = tf.squeeze(merge_output, axis=2)
+              merge_bias = tf.get_variable("merge_bias", [2 * hps.hidden_dim], initializer=self.trunc_norm_init)
+              enc_outputs = merge_output + merge_bias
 
+          # output1 [batch,max_enc_len,hidden_dim]
+          # state1 ([batch_size,hidden_dim],[batch_size,hidden_dim])
+          with tf.variable_scope('cell_layer1'):
+              cell_layer1 = tf.contrib.rnn.LSTMCell(hps.hidden_dim, state_is_tuple=True,
+                                                    initializer=self.rand_unif_init)
+              initial_state1 = self._reduce_states(fw_st, bw_st)  # ([batch_size,hidden_dim],[batch_size,hidden_dim])
+              output1, state1 = tf.nn.dynamic_rnn(cell_layer1, enc_outputs, dtype=tf.float32,
+                                                  sequence_length=self._enc_lens,
+                                                  initial_state=initial_state1, swap_memory=True)
 
-      # output1 [batch,max_enc_len,hidden_dim]
-      # state1 ([batch_size,hidden_dim],[batch_size,hidden_dim])
-      with tf.variable_scope('cell_layer1'):
-        cell_layer1 = tf.contrib.rnn.LSTMCell(hps.hidden_dim, state_is_tuple=True, initializer=self.rand_unif_init)
-        initial_state1 = self._reduce_states(fw_st, bw_st)  # ([batch_size,hidden_dim],[batch_size,hidden_dim])
-        output1, state1 = tf.nn.dynamic_rnn(cell_layer1, enc_outputs, dtype=tf.float32, sequence_length=self._enc_lens,
-                                            initial_state=initial_state1, swap_memory=True)
+          with tf.variable_scope('cell_layer2'):
+              cell_layer2 = tf.contrib.rnn.LSTMCell(hps.hidden_dim, state_is_tuple=True,
+                                                    initializer=self.rand_unif_init)
+              initial_state2 = state1
+              slice_input2 = output1[:, 0::2, :]  # [batch,len2,hidden_dim]
 
-      with tf.variable_scope('cell_layer2'):
-        cell_layer2 = tf.contrib.rnn.LSTMCell(hps.hidden_dim, state_is_tuple=True, initializer=self.rand_unif_init)
-        initial_state2 = state1
-        slice_input2 = output1[:, 0::2, :]  # [batch,len2,hidden_dim]
+              # out
+              output2, state2 = tf.nn.dynamic_rnn(cell_layer2, slice_input2, dtype=tf.float32,
+                                                  sequence_length=self._enc_lens2, initial_state=initial_state2,
+                                                  swap_memory=True)
+          with tf.variable_scope('cell_layer3'):
+              cell_layer3 = tf.contrib.rnn.LSTMCell(hps.hidden_dim, state_is_tuple=True,
+                                                    initializer=self.rand_unif_init)
+              initial_state3 = state2
+              slice_input3 = output2[:, 0::2, :]
+              # output3  [batch,nax_len3,hidden_dim]
+              output3, state3 = tf.nn.dynamic_rnn(cell_layer3, slice_input3, dtype=tf.float32,
+                                                  sequence_length=self._enc_lens3, initial_state=initial_state3,
+                                                  swap_memory=True)
+          pre2 = [o2 for o2 in tf.unstack(output2, axis=0)]  # batch个[max_len2,hidden_dim]
+          pre2_array = []  # batch个[max_enc_len,hidden]
+          for ind2, a2 in enumerate(pre2):
+              # a2 [max_len2,hidden_dim]
 
-        # out
-        output2, state2 = tf.nn.dynamic_rnn(cell_layer2, slice_input2, dtype=tf.float32,
-                                            sequence_length=self._enc_lens2, initial_state=initial_state2,
-                                            swap_memory=True)
-      with tf.variable_scope('cell_layer3'):
-        cell_layer3 = tf.contrib.rnn.LSTMCell(hps.hidden_dim, state_is_tuple=True, initializer=self.rand_unif_init)
-        initial_state3 = state2
-        slice_input3 = output2[:, 0::2, :]
-        # output3  [batch,nax_len3,hidden_dim]
-        output3, state3 = tf.nn.dynamic_rnn(cell_layer3, slice_input3, dtype=tf.float32,
-                                            sequence_length=self._enc_lens3, initial_state=initial_state3,
-                                            swap_memory=True)
-      pre2 = [o2 for o2 in tf.unstack(output2, axis=0)]  # batch个[max_len2,hidden_dim]
-      pre2_array = []  # batch个[max_enc_len,hidden]
-      for ind2, a2 in enumerate(pre2):
-        # a2 [max_len2,hidden_dim]
+              t2 = tf.expand_dims(a2, axis=1)  # a2 [max_len2,1,hidden_dim]
+              t3 = tf.tile(t2, [1, 2, 1])
+              t4 = tf.reshape(t3, [-1, 1, hps.hidden_dim])
+              t5 = tf.squeeze(t4, axis=1)
 
-        t2 = tf.expand_dims(a2, axis=1) # a2 [max_len2,1,hidden_dim]
-        t3 = tf.tile(t2, [1, 2, 1])
-        t4 = tf.reshape(t3, [-1, 1, hps.hidden_dim])
-        t5 = tf.squeeze(t4, axis=1)
+              pre2_array.append(t5)
+          # batch_size,max_enc_len,hidden
+          final_output2 = tf.stack(axis=0, values=pre2_array)
+          final_output2 = final_output2[:, 0:self._max_enc_seq_len, :]
 
-        pre2_array.append(t5)
-      # batch_size,max_enc_len,hidden
-      final_output2 = tf.stack(axis=0, values=pre2_array)
-      final_output2 = final_output2[:, 0:self._max_enc_seq_len, :]
+          pre3 = [o3 for o3 in tf.unstack(output3, axis=0)]  ##batch个[max_len3,hidden_dim]
+          pre3_array = []  # batch个[max_enc_len,hidden]
+          for ind3, a3 in enumerate(pre3):
+              # a3 [max_len3,hidden_dim]
 
-      pre3 = [o3 for o3 in tf.unstack(output3, axis=0)]  ##batch个[max_len3,hidden_dim]
-      pre3_array = []  # batch个[max_enc_len,hidden]
-      for ind3, a3 in enumerate(pre3):
-        # a3 [max_len3,hidden_dim]
+              m2 = tf.expand_dims(a3, axis=1)
+              m3 = tf.tile(m2, [1, 4, 1])
+              m4 = tf.reshape(m3, [-1, 1, hps.hidden_dim])
+              m5 = tf.squeeze(m4, axis=1)
 
-        m2 = tf.expand_dims(a3, axis=1)
-        m3 = tf.tile(m2, [1, 4, 1])
-        m4 = tf.reshape(m3, [-1, 1, hps.hidden_dim])
-        m5 = tf.squeeze(m4, axis=1)
+              pre3_array.append(m5)
 
-        pre3_array.append(m5)
+          final_output3 = tf.stack(axis=0, values=pre3_array)
+          final_output3 = final_output3[:, 0:self._max_enc_seq_len, :]
 
-      final_output3 = tf.stack(axis=0, values=pre3_array)
-      final_output3 = final_output3[:, 0:self._max_enc_seq_len, :]
+          # [batch,enc_step,3*hidden_dim]
+          final_output_pre = tf.concat(values=[output1, final_output2, final_output3], axis=2)
 
-      # [batch,enc_step,3*hidden_dim]
-      final_output_pre = tf.concat(values=[output1, final_output2, final_output3], axis=2)
-
-      final_output = self._concat_dim(enc_outputs, final_output_pre)
-      self._enc_states = final_output
-
+          final_output = self._concat_dim(enc_outputs, final_output_pre)
+          self._enc_states = final_output
+          self._pre_key_enc_states = final_output
+          self._pre_pre_key_enc_states = final_output
 
       # Our encoder is bidirectional and our decoder is unidirectional so we need to reduce the final encoder hidden state to the right size to be the initial decoder hidden state
 
