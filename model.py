@@ -20,7 +20,7 @@ import os
 import time
 import numpy as np
 import tensorflow as tf
-from ddmn_decoder_v1 import attention_decoder
+from ddmn_decoder import attention_decoder
 # from firstpass_decoder import firstpass_decoder
 from tensorflow.contrib.tensorboard.plugins import projector
 from tensorflow.python.ops import nn_ops
