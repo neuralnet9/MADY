@@ -192,7 +192,7 @@ def run_training(model, batcher, sess_context_manager, sv, summary_writer):
       sess = tf_debug.LocalCLIDebugWrapperSession(sess)
       sess.add_tensor_filter("has_inf_or_nan", tf_debug.has_inf_or_nan)
     tt=0
-    while tt<=230000: # repeats until interrupted
+    while True:
       batch = batcher.next_batch()
       tf.logging.info('train step: %f', tt)
       tt+=1

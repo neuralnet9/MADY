@@ -59,12 +59,12 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states,pre_key_enco
 
 
 
-    w_f = [variable_scope.get_variable("wf_{}".format(f), [attn_size, attn_size]) for f in range(3)]
-    b_f = [variable_scope.get_variable("bf_{}".format(f), [attn_size]) for f in range(3)]
-    w_a = [variable_scope.get_variable("wa_{}".format(a), [attn_size, attn_size]) for a in range(3)]
-    b_a = [variable_scope.get_variable("ba_{}".format(f), [attn_size]) for f in range(3)]
-    w_q = [variable_scope.get_variable("wq_{}".format(f), [attn_size, attn_size])for f in range(3) ]
-    b_q = [variable_scope.get_variable("bq_{}".format(f), [attn_size])for f in range(3)]
+    w_f = [variable_scope.get_variable("wf_{}".format(f), [attn_size, attn_size]) for f in range(1)]
+    b_f = [variable_scope.get_variable("bf_{}".format(f), [attn_size]) for f in range(1)]
+    w_a = [variable_scope.get_variable("wa_{}".format(a), [attn_size, attn_size]) for a in range(1)]
+    b_a = [variable_scope.get_variable("ba_{}".format(f), [attn_size]) for f in range(1)]
+    w_q = [variable_scope.get_variable("wq_{}".format(f), [attn_size, attn_size])for f in range(1) ]
+    b_q = [variable_scope.get_variable("bq_{}".format(f), [attn_size])for f in range(1)]
 
     # To calculate attention, we calculate
     #   v^T tanh(W_h h_i + W_s s_t + b_attn)
@@ -74,15 +74,15 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states,pre_key_enco
     attention_vec_size = attn_size
 
     # Get the weight matrix W_h and apply it to each encoder state to get (W_h h_i), the encoder features
-    W_h = [variable_scope.get_variable("W_h{}".format(a), [1, 1, attn_size, attention_vec_size]) for a in range(3)]
+    W_h = [variable_scope.get_variable("W_h{}".format(a), [1, 1, attn_size, attention_vec_size]) for a in range(1)]
     # encoder_features = nn_ops.conv2d(encoder_states, W_h, [1, 1, 1, 1], "SAME") # shape (batch_size,attn_length,1,attention_vec_size)
 
 
     # Get the weight vectors v and w_c (w_c is for coverage)
-    v = [variable_scope.get_variable("v_{}".format(f), [attention_vec_size])for f in range(3)]
+    v = [variable_scope.get_variable("v_{}".format(f), [attention_vec_size])for f in range(1)]
     if use_coverage:
       with variable_scope.variable_scope("coverage"):
-        w_c = [variable_scope.get_variable("w_c{}".format(f), [1, 1, 1, attention_vec_size]) for f in range(3)]
+        w_c = variable_scope.get_variable("w_c", [1, 1, 1, attention_vec_size])
 
     if prev_coverage is not None: # for beam search mode with coverage
       # reshape from (batch_size, attn_length) to (batch_size, attn_len, 1, 1)
@@ -110,90 +110,75 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states,pre_key_enco
           masked_sums = tf.reduce_sum(attn_dist, axis=1) # shape (batch_size)
           return attn_dist / tf.reshape(masked_sums, [-1, 1]) # re-normalize
 
-        for i in range(3):
-            decoder_features = tf.matmul(decoder_state, w_q[i]) + b_q[i]
-            decoder_features = tf.expand_dims(tf.expand_dims(decoder_features, 1),
-                                              1)  # reshape to (batch_size, 1, 1, attention_vec_size)
-            key_encoder_states = tf.expand_dims(key_encoder_states, axis=2)
-            key_encoder_features = nn_ops.conv2d(key_encoder_states, W_h[i], [1, 1, 1, 1], "SAME")
+        decoder_features = tf.matmul(decoder_state, w_q[0]) + b_q[0]
+        decoder_features = tf.expand_dims(tf.expand_dims(decoder_features, 1),1)  # reshape to (batch_size, 1, 1, attention_vec_size)
+        key_encoder_states = tf.expand_dims(key_encoder_states, axis=2)
+        key_encoder_features = nn_ops.conv2d(key_encoder_states, W_h[0], [1, 1, 1, 1], "SAME")
 
-            if use_coverage and coverage is not None:  # non-first step of coverage
-                # Multiply coverage vector by w_c to get coverage_features.
-                coverage_features = nn_ops.conv2d(coverage, w_c[i], [1, 1, 1, 1],
-                                                  "SAME")  # c has shape (batch_size, attn_length, 1, attention_vec_size)
+        if use_coverage and coverage is not None: # non-first step of coverage
+          # Multiply coverage vector by w_c to get coverage_features.
+          coverage_features = nn_ops.conv2d(coverage, w_c, [1, 1, 1, 1], "SAME") # c has shape (batch_size, attn_length, 1, attention_vec_size)
 
-                # Calculate v^T tanh(W_h h_i + W_s s_t + w_c c_i^t + b_attn)
-                e = math_ops.reduce_sum(
-                    v[i] * math_ops.tanh(key_encoder_features + decoder_features + coverage_features),
-                    [2, 3])  # shape (batch_size,attn_length)
+          # Calculate v^T tanh(W_h h_i + W_s s_t + w_c c_i^t + b_attn)
+          e = math_ops.reduce_sum(v[0] * math_ops.tanh(key_encoder_features + decoder_features + coverage_features), [2, 3])  # shape (batch_size,attn_length)
 
-                # Calculate attention distribution
-                attn_dist = masked_attention(e, enc_padding_mask)
+          # Calculate attention distribution
+          attn_dist = masked_attention(e, enc_padding_mask)
 
-                # Update coverage vector
-                if i==2:
-                    coverage += array_ops.reshape(attn_dist, [batch_size, -1, 1, 1])
-            else:
-                # Calculate v^T tanh(W_h h_i + W_s s_t + b_attn)
-                e = math_ops.reduce_sum(v[i] * math_ops.tanh(key_encoder_features + decoder_features),
-                                        [2, 3])  # calculate e
+          # Update coverage vector
+          # coverage += array_ops.reshape(attn_dist, [batch_size, -1, 1, 1])
+        else:
+          # Calculate v^T tanh(W_h h_i + W_s s_t + b_attn)
+          e = math_ops.reduce_sum(v[0] * math_ops.tanh(key_encoder_features + decoder_features), [2, 3]) # calculate e
 
-                # Calculate attention distribution
-                attn_dist = masked_attention(e, enc_padding_mask)
+          # Calculate attention distribution
+          attn_dist = masked_attention(e, enc_padding_mask)
 
-                if use_coverage and i==2:  # first step of training
-                    coverage = tf.expand_dims(tf.expand_dims(attn_dist, 2), 2)  # initialize coverage
+          # if use_coverage: # first step of training
+          #   coverage = tf.expand_dims(tf.expand_dims(attn_dist,2),2) # initialize coverage
 
-            # Calculate the context vector from attn_dist and encoder_states
-            context_vector = math_ops.reduce_sum(array_ops.reshape(attn_dist, [batch_size, -1, 1, 1]) * encoder_states,
-                                                 [1, 2])  # shape (batch_size, attn_size).
-            context_vector = array_ops.reshape(context_vector, [-1, attn_size])
+        # Calculate the context vector from attn_dist and encoder_states
+        context_vector = math_ops.reduce_sum(array_ops.reshape(attn_dist, [batch_size, -1, 1, 1]) * encoder_states, [1, 2]) # shape (batch_size, attn_size).
+        context_vector = array_ops.reshape(context_vector, [-1, attn_size])
 
-            y=tf.concat(values=[context_vector,decoder_state],axis=1)
-            tmp_output, tmp_state = atten_gru(y, decoder_state)  # tmp_state batch,attn_size
-            new_decoder_features = tf.matmul(tmp_state, w_q[i]) + b_q[i]
-            new_decoder_features = tf.expand_dims(tf.expand_dims(new_decoder_features, 1), 1)
-            if use_coverage and coverage is not None:  # non-first step of coverage
-                # Multiply coverage vector by w_c to get coverage_features.
-                coverage_features = nn_ops.conv2d(coverage, w_c, [1, 1, 1, 1],
-                                                  "SAME")  # c has shape (batch_size, attn_length, 1, attention_vec_size)
+        # y=tf.concat(values=[context_vector,decoder_state],axis=1)
+        tmp_output, tmp_state = atten_gru(context_vector, decoder_state) # tmp_state batch,attn_size
+        new_decoder_features = tf.matmul(tmp_state, w_q[0]) + b_q[0]
+        new_decoder_features = tf.expand_dims(tf.expand_dims(new_decoder_features, 1), 1)
+        if use_coverage and coverage is not None: # non-first step of coverage
+          # Multiply coverage vector by w_c to get coverage_features.
+          coverage_features = nn_ops.conv2d(coverage, w_c, [1, 1, 1, 1], "SAME") # c has shape (batch_size, attn_length, 1, attention_vec_size)
 
-                # Calculate v^T tanh(W_h h_i + W_s s_t + w_c c_i^t + b_attn)
-                e = math_ops.reduce_sum(
-                    v[i] * math_ops.tanh(key_encoder_features + new_decoder_features + coverage_features),
-                    [2, 3])  # shape (batch_size,attn_length)
+          # Calculate v^T tanh(W_h h_i + W_s s_t + w_c c_i^t + b_attn)
+          e = math_ops.reduce_sum(v[0] * math_ops.tanh(key_encoder_features + new_decoder_features + coverage_features), [2, 3])  # shape (batch_size,attn_length)
 
-                # Calculate attention distribution
-                k_attn_dist = masked_attention(e, enc_padding_mask)
+          # Calculate attention distribution
+          attn_dist = masked_attention(e, enc_padding_mask)
 
-                # Update coverage vector
-                # coverage += array_ops.reshape(attn_dist, [batch_size, -1, 1, 1])
-            else:
-                # Calculate v^T tanh(W_h h_i + W_s s_t + b_attn)
-                e = math_ops.reduce_sum(v[i] * math_ops.tanh(key_encoder_features + new_decoder_features),
-                                        [2, 3])  # calculate e
+          # Update coverage vector
+          coverage += array_ops.reshape(attn_dist, [batch_size, -1, 1, 1])
+        else:
+          # Calculate v^T tanh(W_h h_i + W_s s_t + b_attn)
+          e = math_ops.reduce_sum(v[0] * math_ops.tanh(key_encoder_features + new_decoder_features), [2, 3]) # calculate e
 
-                # Calculate attention distribution
-                k_attn_dist = masked_attention(e, enc_padding_mask)
+          # Calculate attention distribution
+          attn_dist = masked_attention(e, enc_padding_mask)
 
-                if use_coverage:  # first step of training
-                    coverage = tf.expand_dims(tf.expand_dims(attn_dist, 2), 2)  # initialize coverage
+          if use_coverage: # first step of training
+            coverage = tf.expand_dims(tf.expand_dims(attn_dist,2),2) # initialize coverage
 
-            f_t = tf.nn.sigmoid(tf.matmul(tmp_state, w_f[i]) + b_f[i])
-            use_attn_dist = tf.transpose(tf.expand_dims(k_attn_dist, axis=1), perm=[0, 2, 1])
-            use_f_t = tf.expand_dims(f_t, axis=1)
-            forget_memory = tf.matmul(use_attn_dist, use_f_t)  # batch,attenlen,attn_size
-            key_encoder_states = tf.squeeze(key_encoder_states, axis=2)
+        f_t = tf.nn.sigmoid(tf.matmul(tmp_state, w_f[0]) + b_f[0])
+        use_attn_dist = tf.transpose(tf.expand_dims(attn_dist ,axis=1),perm=[0,2,1])
+        use_f_t = tf.expand_dims(f_t ,axis=1)
+        forget_memory = tf.matmul(use_attn_dist,use_f_t) #batch,attenlen,attn_size
+        key_encoder_states = tf.squeeze(key_encoder_states, axis=2)
 
-            temp_memory = key_encoder_states * (1 - forget_memory)
-            a_t = tf.nn.sigmoid(tf.matmul(tmp_state, w_a[i]) + b_a[i])
-            use_a_t = tf.expand_dims(a_t, axis=1)
-            add_memory = tf.matmul(use_attn_dist, use_a_t)
+        temp_memory = key_encoder_states * (1 - forget_memory)
+        a_t = tf.nn.sigmoid(tf.matmul(tmp_state, w_a[0]) + b_a[0])
+        use_a_t = tf.expand_dims(a_t, axis=1)
+        add_memory = tf.matmul(use_attn_dist, use_a_t)
 
-            key_encoder_states = temp_memory + add_memory
-
-
-
+        key_encoder_states = temp_memory + add_memory
 
 
       return context_vector, attn_dist, coverage, key_encoder_states
